@@ -117,10 +117,11 @@ Where to create long-lived credentials:
 
 The tui is the default mode (`ee`, or `ee tui`). It is an interactive,
 keyboard-driven browser/editor for the store — no need to remember flags.
-If the store doesn't exist yet, it warns you and asks for a new master
-password; otherwise it asks for the existing one, once, up front. Every
-write (add, update, delete) persists immediately, so there's nothing
-separate to "save".
+If danger mode is already on, tui reuses the cached master password and
+does not prompt. Otherwise, if the store doesn't exist yet, it warns you
+and asks for a new master password; if the store exists, it asks for the
+existing one, once, up front. Every write (add, update, delete) persists
+immediately, so there's nothing separate to "save".
 
 Navigation: `j`/`k` (or `↑`/`↓`) to move, `Enter`/`l` to open, `h`/`Esc`/`q`
 to go back or quit. Every screen shows a one-line reminder of the keys that
@@ -143,10 +144,10 @@ work there.
 - `a` — add a new field to this record (refuses to overwrite an existing
   one — use `u` for that)
 
-The master password you enter for a `tui` session is held only for that
-session — it's forgotten the moment you quit (`q`/`Esc` from LIST, or after
-injecting), and it never touches `ee danger on`/off or its badge, even if
-danger mode is separately active in your shell.
+A password typed during a `tui` session is held only for that session —
+it's forgotten the moment you quit (`q`/`Esc` from LIST, or after
+injecting). tui never turns danger mode on or off; if danger mode was
+already active, its cached password and badge stay as they were.
 
 ## Behavior notes
 

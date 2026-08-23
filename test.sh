@@ -825,8 +825,10 @@ test_selftest_rejects_storage() {
 # walks name -> type (AWS, accepted via Enter) -> its three required fields
 # -> no extra custom fields (blank line) -> notification dismissed -> quit.
 # The record must be readable afterwards with the same password.
+# Danger mode is off so this path actually hits the password prompt.
 test_tui_create_store_and_add_record() {
   init_store_env
+  unset CLOUD_ENV_MASTER_PASSWORD CLOUD_ENV_DANGER
   ce tui <<<"$(printf 'tuipass1\namyaws\n\nAKIA_TUI\nus-tui-1\nsecret-tui\n\nzq')"
   assert_ok "tui create-store + add flow"
   assert_contains "$OUT" "Added myaws" "tui reports the record was added"
@@ -879,6 +881,49 @@ test_tui_q_does_not_leak_traps() {
   assert_ok "q quits tui"
   assert_eq "" "$(trap -p INT)" "INT trap must not leak after q"
   assert_eq "" "$(trap -p RETURN)" "RETURN trap must not leak after q"
+}
+
+# Danger mode already holds the master password, so tui must open the LIST
+# screen with no password prompt and must not clear the cached password.
+test_tui_skips_password_when_danger_on() {
+  init_store_env
+  add_aws aws-main
+  ce tui <<<"q"
+  assert_ok "tui with danger mode on"
+  assert_not_contains "$OUT" "Master password:" "must not prompt when danger is on"
+  assert_contains "$OUT" "ee tui --" "tui list was shown"
+  assert_contains "$OUT" "aws-main" "existing record shown"
+  assert_eq "$MASTER_PASS" "${CLOUD_ENV_MASTER_PASSWORD:-}" "danger-mode password still cached"
+  assert_eq "1" "${CLOUD_ENV_DANGER:-}" "danger mode still on"
+}
+
+# Same skip applies when the store does not exist yet: reuse the cached
+# password instead of asking the user to set a new one.
+test_tui_create_store_with_danger_skips_password() {
+  init_store_env
+  ce tui <<<"$(printf 'amyaws\n\nAKIA_TUI\nus-tui-1\nsecret-tui\n\nzq')"
+  assert_ok "tui create-store with danger on"
+  assert_not_contains "$OUT" "Set a new master password" "must not ask for a new password"
+  assert_not_contains "$OUT" "Master password:" "must not prompt when danger is on"
+  assert_contains "$OUT" "Added myaws" "tui reports the record was added"
+  assert_eq "$MASTER_PASS" "${CLOUD_ENV_MASTER_PASSWORD:-}" "danger-mode password still cached"
+
+  ce ls
+  assert_contains "$OUT" "myaws	AWS" "record encrypted with the cached password"
+}
+
+# Injecting from tui while danger mode is on still exports the record, and
+# still leaves danger mode (and its cached password) intact.
+test_tui_inject_with_danger_keeps_password() {
+  init_store_env
+  add_aws tui-target AKIA_INJECT
+  ce tui <<<"i"
+  assert_ok "tui inject with danger on"
+  assert_not_contains "$OUT" "Master password:" "must not prompt when danger is on"
+  assert_contains "$OUT" "Environment set for AWS key: tui-target" "tui injected via 'i'"
+  assert_eq "AKIA_INJECT" "${AWS_ACCESS_KEY_ID:-}" "injected record's vars land in the calling shell"
+  assert_eq "$MASTER_PASS" "${CLOUD_ENV_MASTER_PASSWORD:-}" "danger-mode password still cached"
+  assert_eq "1" "${CLOUD_ENV_DANGER:-}" "danger mode still on"
 }
 
 # ===========================================================================
@@ -1002,6 +1047,9 @@ run_test "tui creates a store and adds a record"          test_tui_create_store_
 run_test "tui inject exports vars and forgets password"   test_tui_inject_exports_and_forgets_password
 run_test "tui ctrl-c quits without killing the shell"     test_tui_ctrl_c_quits_without_killing_shell
 run_test "tui q does not leak traps"                      test_tui_q_does_not_leak_traps
+run_test "tui skips password when danger is on"           test_tui_skips_password_when_danger_on
+run_test "tui create-store with danger skips password"    test_tui_create_store_with_danger_skips_password
+run_test "tui inject with danger keeps password"          test_tui_inject_with_danger_keeps_password
 
 section "I: install"
 run_test "install adds alias to bashrc"                   test_install_adds_alias_to_bashrc

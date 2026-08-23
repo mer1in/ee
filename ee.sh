@@ -1118,14 +1118,16 @@ tui_screen_list() {
 
 # Entry point for `ee tui`. Authenticates once (password is held only for
 # this function's lifetime -- see the note above), then loops the LIST
-# screen until the user quits or injects a key.
+# screen until the user quits or injects a key. If danger mode is already
+# on, the cached master password is reused and no prompt is shown.
 run_tui() {
   local orig_stty prev_int_trap tui_password
   local TUI_STORE_JSON TUI_QUIT_FLAG=0 TUI_KEY TUI_INPUT
-  # -x (export) so openssl subprocesses can see it via `-pass env:...`; being
-  # `local` still means it -- and its export binding -- disappear the moment
-  # run_tui returns, regardless of danger mode's own (separately exported)
-  # CLOUD_ENV_MASTER_PASSWORD.
+  # Snapshot before `local` shadows it so a danger-mode cache can skip the
+  # prompt. -x so openssl subprocesses see it via `-pass env:...`; being
+  # `local` still means this binding disappears the moment run_tui returns,
+  # restoring danger mode's own (separately exported) password if any.
+  local cached_password="${CLOUD_ENV_MASTER_PASSWORD:-}"
   local -x CLOUD_ENV_MASTER_PASSWORD
 
   orig_stty=""
@@ -1151,6 +1153,11 @@ run_tui() {
 
   if [[ ! -f "$CLOUD_ENV_STORE_PATH" ]]; then
     echo "No store found at $CLOUD_ENV_STORE_PATH -- creating a new one."
+  fi
+
+  if [[ -n "${CLOUD_ENV_DANGER:-}" && -n "$cached_password" ]]; then
+    CLOUD_ENV_MASTER_PASSWORD="$cached_password"
+  elif [[ ! -f "$CLOUD_ENV_STORE_PATH" ]]; then
     if ! read -r -s -p "Set a new master password: " tui_password; then
       echo
       return 130
@@ -1162,7 +1169,6 @@ run_tui() {
       return 1
     fi
     CLOUD_ENV_MASTER_PASSWORD="$tui_password"
-    TUI_STORE_JSON='{}'
   else
     if ! read -r -s -p "Master password: " tui_password; then
       echo
@@ -1171,6 +1177,11 @@ run_tui() {
     echo
     [[ "$TUI_QUIT_FLAG" -eq 1 ]] && return 130
     CLOUD_ENV_MASTER_PASSWORD="$tui_password"
+  fi
+
+  if [[ ! -f "$CLOUD_ENV_STORE_PATH" ]]; then
+    TUI_STORE_JSON='{}'
+  else
     TUI_STORE_JSON=$(load_store) || return 1
   fi
 
