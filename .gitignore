@@ -1,0 +1,5 @@
+# Local credential material — never commit
+*.enc
+*.enc.bak
+creds.json
+gcp-mock.json

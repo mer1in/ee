@@ -1,9 +1,9 @@
 # ee
 
-Keep cloud credentials in an **encrypted store** and load them into your shell
+Keep credentials in an **encrypted store** and load them into your shell
 as environment variables — per cloud type, with prompt badges so you always
-know which contexts are active. Browse and edit the store interactively with
-`ee tui`, or drive it from the CLI.
+know which contexts are active. Running `ee` with no arguments opens the
+interactive tui; you can also drive it from the CLI.
 
 ## Installation
 
@@ -26,24 +26,29 @@ Requirements: `bash`, `openssl`, `jq`.
 
 | Command | Description |
 | --- | --- |
+| `ee` | Interactive browser/editor for the store (the default). |
+| `ee tui` | Same as `ee` — the tui, explicitly. |
 | `ee <key-name>` | Shortcut for `ee inject <key-name>`. |
 | `ee inject <key-name>` | Decrypt the store and export the record's variables. |
 | `ee ls` | List saved records with their type. |
 | `ee add <key-name> [--type=…] …` | Create or update a (typed) record. |
 | `ee save <filename.json> [--force]` | Encrypt a plaintext JSON file into the store. |
-| `ee tui` | Interactive browser/editor for the store. |
 | `ee install` | Add the `ee` alias to `~/.bashrc`, pointing at this script. |
 | `ee off` | Unset every variable the tool exported (see below). |
 | `ee danger on` \| `off` | Cache the master password in the environment. |
 | `ee test` | Run the built-in temp-store self-test. |
+| `ee help` | Print usage (`--help` and `-h` work too). |
 
-### The default command: `ee <key-name>`
+### Default mode: the tui
 
-Any token that isn't one of the subcommands above is treated as a key name
-to inject — `ee myenv` behaves exactly like `ee inject myenv`, including
+`ee` with no command (and `ee --storage <path>` with no command) opens the
+interactive tui. `ee tui` is the same thing, spelled out.
+
+Any other token that isn't one of the subcommands above is treated as a key
+name to inject — `ee myenv` behaves exactly like `ee inject myenv`, including
 `--storage` support and the same error handling. If a saved key happens to
 share a name with a real subcommand (`ls`, `save`, ...), the subcommand
-wins; reach that key with `ee inject <name>` or through `ee tui` instead.
+wins; reach that key with `ee inject <name>` or through the tui instead.
 
 ### The `--storage` option
 
@@ -110,11 +115,12 @@ Where to create long-lived credentials:
 
 ## tui
 
-`ee tui` is an interactive, keyboard-driven browser/editor for the store —
-no need to remember flags. If the store doesn't exist yet, it warns you and
-asks for a new master password; otherwise it asks for the existing one, once,
-up front. Every write (add, update, delete) persists immediately, so there's
-nothing separate to "save".
+The tui is the default mode (`ee`, or `ee tui`). It is an interactive,
+keyboard-driven browser/editor for the store — no need to remember flags.
+If the store doesn't exist yet, it warns you and asks for a new master
+password; otherwise it asks for the existing one, once, up front. Every
+write (add, update, delete) persists immediately, so there's nothing
+separate to "save".
 
 Navigation: `j`/`k` (or `↑`/`↓`) to move, `Enter`/`l` to open, `h`/`Esc`/`q`
 to go back or quit. Every screen shows a one-line reminder of the keys that
@@ -194,3 +200,22 @@ What you will see:
 ./test.sh      # full integration suite (isolated temp stores, non-interactive)
 ee test        # built-in quick self-test against a throwaway temp store
 ```
+
+Both are non-destructive: they use throwaway directories, never the real
+`~/.cloud-env` store or `~/.bashrc`. `ee test` runs in a subshell, so it
+does not unset or overwrite credentials already exported in your shell.
+
+## Future plans
+
+Optional remote backends, so records can be sourced from a secrets manager
+instead of (or in addition to) the local encrypted file:
+
+- **HashiCorp Vault** — authenticate (token, AppRole, or similar), then map
+  Vault KV paths onto `ee` records so `inject` / the tui can pull live
+  values without copying them into the local openssl store.
+- **Keeper Security** — the same idea against Keeper Secrets Manager (or
+  Commander): browse Keeper records in the tui and inject them as
+  environment variables.
+
+The local encrypted store remains the default; these would be opt-in
+backends selected per record or via `--storage`-style configuration.

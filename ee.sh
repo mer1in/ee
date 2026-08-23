@@ -78,7 +78,9 @@ USAGE
 print_usage() {
   cat <<'USAGE'
 Usage:
-  ee <key-name>                (shortcut for: ee inject <key-name>)
+  ee                           Interactive tui (the default).
+  ee tui
+  ee <key-name>                Shortcut for: ee inject <key-name>
   ee inject <key-name>
   ee ls
   ee off
@@ -88,15 +90,16 @@ Usage:
             [GCP:   --CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=<path> --CLOUDSDK_CORE_PROJECT=<id>]
             [Azure: --AZURE_CLIENT_ID=<id> --AZURE_CLIENT_SECRET=<secret> --AZURE_TENANT_ID=<id> --AZURE_SUBSCRIPTION_ID=<id>]
             [--set NAME=VALUE]
-  ee tui
   ee install
   ee danger on
   ee danger off
   ee test
+  ee help
 
 Options:
   --storage <path>  Use an alternate encrypted store (inject/ls/add/save/tui).
                     May appear anywhere on the command line.
+                    With no command (`ee --storage <path>`), opens the tui.
   --force           With 'save': skip the overwrite confirmation.
 
 USAGE
@@ -1038,7 +1041,7 @@ tui_screen_list() {
       i)
         if [[ $key_count -gt 0 ]]; then
           selected="${keys[$cursor]}"
-          stty "$orig_stty" 2>/dev/null
+          [[ -n "$orig_stty" ]] && stty "$orig_stty" 2>/dev/null
           echo
           show_record "$selected"
           TUI_QUIT_FLAG=1
@@ -1090,12 +1093,15 @@ run_tui() {
     TUI_STORE_JSON=$(load_store) || return 1
   fi
 
-  orig_stty=$(stty -g 2>/dev/null)
+  orig_stty=""
+  if [[ -t 0 ]]; then
+    orig_stty=$(stty -g 2>/dev/null) || orig_stty=""
+  fi
   prev_int_trap=$(trap -p INT)
-  trap 'stty "$orig_stty" 2>/dev/null; if [[ -n "$prev_int_trap" ]]; then eval "$prev_int_trap"; else trap - INT; fi; TUI_QUIT_FLAG=1' INT
-  trap 'stty "$orig_stty" 2>/dev/null; if [[ -n "$prev_int_trap" ]]; then eval "$prev_int_trap"; else trap - INT; fi' RETURN
+  trap '[[ -n "$orig_stty" ]] && stty "$orig_stty" 2>/dev/null; if [[ -n "$prev_int_trap" ]]; then eval "$prev_int_trap"; else trap - INT; fi; TUI_QUIT_FLAG=1' INT
+  trap '[[ -n "$orig_stty" ]] && stty "$orig_stty" 2>/dev/null; if [[ -n "$prev_int_trap" ]]; then eval "$prev_int_trap"; else trap - INT; fi' RETURN
 
-  stty -echo -icanon min 1 time 0 2>/dev/null
+  [[ -n "$orig_stty" ]] && stty -echo -icanon min 1 time 0 2>/dev/null
 
   while [[ "$TUI_QUIT_FLAG" -ne 1 ]]; do
     tui_screen_list
@@ -1107,8 +1113,7 @@ run_tui() {
 # ---------------------------------------------------------------------------
 
 run_self_test() {
-  local tmp_dir tmp_store original_store original_password original_danger original_active original_key original_type original_ps1
-  local original_active_types
+  local tmp_dir rc
   local test_pass='test-pass'
 
   require_tools || {
@@ -1117,63 +1122,61 @@ run_self_test() {
   }
 
   tmp_dir=$(mktemp -d) || return 1
-  tmp_store="$tmp_dir/credentials.json.enc"
 
-  original_store="$CLOUD_ENV_STORE_PATH"
-  original_password="${CLOUD_ENV_MASTER_PASSWORD:-}"
-  original_danger="${CLOUD_ENV_DANGER:-}"
-  original_active="${CLOUD_ENV_ACTIVE_VARS:-}"
-  original_active_types="${CLOUD_ENV_ACTIVE_TYPES:-}"
-  original_key="${CLOUD_KEY_NAME:-}"
-  original_type="${CLOUD_ENV_TYPE:-}"
-  original_ps1="${CLOUD_PS1_KEY:-}"
+  # Isolated subshell + throwaway store: never mutates the caller's
+  # environment, danger-mode cache, prompt badges, or real credential store.
+  (
+    trap 'rm -rf "$tmp_dir"' EXIT
+    CLOUD_ENV_STORE_PATH="$tmp_dir/credentials.json.enc"
+    unset CLOUD_ENV_MASTER_PASSWORD CLOUD_ENV_DANGER
+    unset CLOUD_ENV_ACTIVE_VARS CLOUD_ENV_ACTIVE_TYPES
+    unset CLOUD_KEY_NAME CLOUD_ENV_TYPE CLOUD_PS1_KEY
 
-  trap 'rm -rf "$tmp_dir"; CLOUD_ENV_STORE_PATH="$original_store"; export CLOUD_ENV_MASTER_PASSWORD="$original_password"; export CLOUD_ENV_DANGER="$original_danger"; CLOUD_ENV_ACTIVE_VARS="$original_active"; CLOUD_ENV_ACTIVE_TYPES="$original_active_types"; CLOUD_KEY_NAME="$original_key"; CLOUD_ENV_TYPE="$original_type"; CLOUD_PS1_KEY="$original_ps1"' RETURN
+    enable_danger_mode_with_password "$test_pass" || exit 1
 
-  CLOUD_ENV_STORE_PATH="$tmp_store"
-  unset_active_vars
-  enable_danger_mode_with_password "$test_pass" || return 1
+    save_store "$(jq -n '{
+      "aws-main": {type: "AWS", AWS_ACCESS_KEY_ID: "aws-id", AWS_SECRET_ACCESS_KEY: "aws-secret", AWS_DEFAULT_REGION: "us-west-2"},
+      "aws-next": {type: "AWS", AWS_ACCESS_KEY_ID: "aws-id-2", AWS_SECRET_ACCESS_KEY: "aws-secret-2", AWS_DEFAULT_REGION: "eu-west-1"},
+      "gcp-main": {type: "GCP", CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE: "/tmp/gcp.json", CLOUDSDK_CORE_PROJECT: "demo-project"},
+      "azure-main": {type: "Azure", AZURE_TENANT_ID: "tenant", AZURE_CLIENT_ID: "client", AZURE_CLIENT_SECRET: "secret", AZURE_SUBSCRIPTION_ID: "sub"}
+    }')" || exit 1
 
-  save_store "$(jq -n '{
-    "aws-main": {type: "AWS", AWS_ACCESS_KEY_ID: "aws-id", AWS_SECRET_ACCESS_KEY: "aws-secret", AWS_DEFAULT_REGION: "us-west-2"},
-    "aws-next": {type: "AWS", AWS_ACCESS_KEY_ID: "aws-id-2", AWS_SECRET_ACCESS_KEY: "aws-secret-2", AWS_DEFAULT_REGION: "eu-west-1"},
-    "gcp-main": {type: "GCP", CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE: "/tmp/gcp.json", CLOUDSDK_CORE_PROJECT: "demo-project"},
-    "azure-main": {type: "Azure", AZURE_TENANT_ID: "tenant", AZURE_CLIENT_ID: "client", AZURE_CLIENT_SECRET: "secret", AZURE_SUBSCRIPTION_ID: "sub"}
-  }')" || return 1
+    show_record aws-main || exit 1
+    [[ "${AWS_ACCESS_KEY_ID:-}" == "aws-id" ]] || { echo "AWS credentials were not loaded"; exit 1; }
+    [[ "${CLOUD_ENV_TYPE:-}" == "AWS" ]] || { echo "AWS type was not preserved"; exit 1; }
 
-  show_record aws-main || return 1
-  [[ "${AWS_ACCESS_KEY_ID:-}" == "aws-id" ]] || { echo "AWS credentials were not loaded"; return 1; }
-  [[ "${CLOUD_ENV_TYPE:-}" == "AWS" ]] || { echo "AWS type was not preserved"; return 1; }
+    show_record gcp-main || exit 1
+    [[ "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" == "/tmp/gcp.json" ]] || { echo "GCP credentials were not loaded"; exit 1; }
+    [[ "${AWS_ACCESS_KEY_ID:-}" == "aws-id" ]] || { echo "AWS variables should remain untouched when loading GCP"; exit 1; }
+    [[ "$CLOUD_PS1_KEY" == *"AWS:aws-main"* && "$CLOUD_PS1_KEY" == *"GCP:gcp-main"* ]] || { echo "Prompt marker should include both AWS and GCP"; exit 1; }
+    [[ "$CLOUD_PS1_KEY" == *"DANGER"* ]] || { echo "Danger marker should be visible in prompt"; exit 1; }
 
-  show_record gcp-main || return 1
-  [[ "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" == "/tmp/gcp.json" ]] || { echo "GCP credentials were not loaded"; return 1; }
-  [[ "${AWS_ACCESS_KEY_ID:-}" == "aws-id" ]] || { echo "AWS variables should remain untouched when loading GCP"; return 1; }
-  [[ "$CLOUD_PS1_KEY" == *"AWS:aws-main"* && "$CLOUD_PS1_KEY" == *"GCP:gcp-main"* ]] || { echo "Prompt marker should include both AWS and GCP"; return 1; }
-  [[ "$CLOUD_PS1_KEY" == *"DANGER"* ]] || { echo "Danger marker should be visible in prompt"; return 1; }
+    show_record aws-next || exit 1
+    [[ "${AWS_ACCESS_KEY_ID:-}" == "aws-id-2" ]] || { echo "AWS context should be replaced by type"; exit 1; }
+    [[ "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" == "/tmp/gcp.json" ]] || { echo "GCP context should remain untouched"; exit 1; }
 
-  show_record aws-next || return 1
-  [[ "${AWS_ACCESS_KEY_ID:-}" == "aws-id-2" ]] || { echo "AWS context should be replaced by type"; return 1; }
-  [[ "${CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE:-}" == "/tmp/gcp.json" ]] || { echo "GCP context should remain untouched"; return 1; }
+    set_danger_mode off || exit 1
+    [[ -z "${CLOUD_ENV_DANGER:-}" && -z "${CLOUD_ENV_MASTER_PASSWORD:-}" ]] || { echo "Danger mode was not disabled"; exit 1; }
+    [[ "$CLOUD_PS1_KEY" != *"DANGER"* ]] || { echo "Danger marker should be removed"; exit 1; }
 
-  set_danger_mode off || return 1
-  [[ -z "${CLOUD_ENV_DANGER:-}" && -z "${CLOUD_ENV_MASTER_PASSWORD:-}" ]] || { echo "Danger mode was not disabled"; return 1; }
-  [[ "$CLOUD_PS1_KEY" != *"DANGER"* ]] || { echo "Danger marker should be removed"; return 1; }
+    set_danger_mode on "$test_pass" >/dev/null 2>&1 && { echo "danger on should reject command-line password"; exit 1; }
+    enable_danger_mode_with_password "$test_pass" || exit 1
 
-  set_danger_mode on "$test_pass" >/dev/null 2>&1 && { echo "danger on should reject command-line password"; return 1; }
-  enable_danger_mode_with_password "$test_pass" || return 1
+    add_record azure-extra --type=Azure --AZURE_CLIENT_ID=cid --AZURE_CLIENT_SECRET=csec --AZURE_TENANT_ID=tid --AZURE_SUBSCRIPTION_ID=sid || exit 1
+    list_records | grep -q '^azure-extra[[:space:]]Azure$' || { echo "Typed record listing failed"; exit 1; }
 
-  add_record azure-extra --type=Azure --AZURE_CLIENT_ID=cid --AZURE_CLIENT_SECRET=csec --AZURE_TENANT_ID=tid --AZURE_SUBSCRIPTION_ID=sid || return 1
-  list_records | grep -q '^azure-extra[[:space:]]Azure$' || { echo "Typed record listing failed"; return 1; }
+    # Custom (unknown) types: fields come exclusively from --set NAME=VALUE.
+    add_record custom-extra --type=qqq --set CUSTOM_TOKEN=tok --set CUSTOM_URL=https://example.test || exit 1
+    list_records | grep -q '^custom-extra[[:space:]]qqq$' || { echo "Custom record listing failed"; exit 1; }
+    show_record custom-extra || exit 1
+    [[ "${CUSTOM_TOKEN:-}" == "tok" ]] || { echo "Custom-type fields were not loaded"; exit 1; }
+    [[ "$CLOUD_PS1_KEY" == *"qqq:custom-extra"* ]] || { echo "Custom type badge missing from prompt"; exit 1; }
 
-  # Custom (unknown) types: fields come exclusively from --set NAME=VALUE.
-  add_record custom-extra --type=qqq --set CUSTOM_TOKEN=tok --set CUSTOM_URL=https://example.test || return 1
-  list_records | grep -q '^custom-extra[[:space:]]qqq$' || { echo "Custom record listing failed"; return 1; }
-  show_record custom-extra || return 1
-  [[ "${CUSTOM_TOKEN:-}" == "tok" ]] || { echo "Custom-type fields were not loaded"; return 1; }
-  [[ "$CLOUD_PS1_KEY" == *"qqq:custom-extra"* ]] || { echo "Custom type badge missing from prompt"; return 1; }
-
-  unset_active_vars
-  echo "Self-test passed"
+    echo "Self-test passed"
+  )
+  rc=$?
+  rm -rf "$tmp_dir"
+  return "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -1184,17 +1187,18 @@ cloud_env_main() {
   local cmd
   local -a args=()
 
+  # No arguments (and `ee --storage <path>` with no command) opens the tui.
   if [[ $# -eq 0 ]]; then
-    print_usage
-    return 1
+    run_tui
+    return $?
   fi
 
   # --storage is a global option: it may appear anywhere on the command line.
   parse_storage_option "$@" || return 1
 
   if [[ ${#PARSED_ARGS[@]} -eq 0 ]]; then
-    print_usage
-    return 1
+    run_with_storage_override "$PARSED_STORAGE_PATH" run_tui
+    return $?
   fi
 
   cmd="${PARSED_ARGS[0]}"
@@ -1204,7 +1208,7 @@ cloud_env_main() {
   # name to inject, e.g. `ee myenv` behaves exactly like `ee inject myenv`
   # (reusing inject's own arg-count validation and --storage handling).
   case "$cmd" in
-    off|ls|save|add|inject|danger|test|tui|install) ;;
+    off|ls|save|add|inject|danger|test|tui|install|help|--help|-h) ;;
     *)
       cmd="inject"
       args=("${PARSED_ARGS[@]}")
@@ -1284,6 +1288,14 @@ cloud_env_main() {
     test)
       require_no_storage test || return 1
       run_self_test
+      ;;
+    help|--help|-h)
+      require_no_storage help || return 1
+      if [[ ${#args[@]} -ne 0 ]]; then
+        echo "Usage: ee help" >&2
+        return 1
+      fi
+      print_usage
       ;;
     *)
       print_usage
