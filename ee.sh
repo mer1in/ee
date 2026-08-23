@@ -747,14 +747,36 @@ add_record() {
 # passing them around explicitly, and they vanish (including the tui-local
 # master password) the moment run_tui returns.
 
+tui_restore_tty() {
+  [[ -n "$orig_stty" ]] && stty "$orig_stty" 2>/dev/null
+}
+
+# Raw mode with -isig so Ctrl-C is a byte ($'\x03') rather than SIGINT.
+# Necessary because this script is sourced: a default SIGINT handler would
+# terminate the user's shell (and typically close the terminal tab).
+tui_set_raw() {
+  [[ -n "$orig_stty" ]] && stty -echo -icanon -isig min 1 time 0 2>/dev/null
+}
+
 # Read one keypress, resolving arrow-key escape sequences. Sets $TUI_KEY to
 # one of: a literal character, ENTER, ESC, UP, DOWN, LEFT, RIGHT. Sets
-# TUI_QUIT_FLAG=1 if input can no longer be read (e.g. Ctrl-C interrupted it,
-# or stdin closed).
+# TUI_QUIT_FLAG=1 if input can no longer be read (e.g. Ctrl-C, or stdin closed).
 tui_read_key() {
   local b rest
 
+  if [[ "$TUI_QUIT_FLAG" -eq 1 ]]; then
+    TUI_KEY="ESC"
+    return
+  fi
+
   if ! IFS= read -r -s -n 1 b; then
+    TUI_KEY="ESC"
+    TUI_QUIT_FLAG=1
+    return
+  fi
+
+  # Ctrl-C. With -isig this arrives as ETX instead of SIGINT.
+  if [[ "$b" == $'\x03' ]]; then
     TUI_KEY="ESC"
     TUI_QUIT_FLAG=1
     return
@@ -780,20 +802,48 @@ tui_read_key() {
 }
 
 # Temporarily leave raw mode for a normal, visible line prompt. Sets
-# $TUI_INPUT.
+# $TUI_INPUT. Returns non-zero if the user interrupted (Ctrl-C) or the
+# session is already quitting.
 tui_read_line() {
   local prompt="$1"
-  stty "$orig_stty" 2>/dev/null
-  read -r -p "$prompt" TUI_INPUT
-  stty -echo -icanon min 1 time 0 2>/dev/null
+
+  if [[ "$TUI_QUIT_FLAG" -eq 1 ]]; then
+    TUI_INPUT=""
+    return 1
+  fi
+
+  tui_restore_tty
+  if ! read -r -p "$prompt" TUI_INPUT; then
+    TUI_QUIT_FLAG=1
+    TUI_INPUT=""
+    return 1
+  fi
+  if [[ "$TUI_QUIT_FLAG" -eq 1 ]]; then
+    TUI_INPUT=""
+    return 1
+  fi
+  tui_set_raw
+  return 0
 }
 
-# A yes/no line prompt; returns success only on y/Y.
+# A yes/no line prompt; returns success only on y/Y. Interrupted input
+# is treated as "no" and also sets TUI_QUIT_FLAG.
 tui_confirm() {
   local prompt="$1" answer
-  stty "$orig_stty" 2>/dev/null
-  read -r -p "$prompt" answer
-  stty -echo -icanon min 1 time 0 2>/dev/null
+
+  if [[ "$TUI_QUIT_FLAG" -eq 1 ]]; then
+    return 1
+  fi
+
+  tui_restore_tty
+  if ! read -r -p "$prompt" answer; then
+    TUI_QUIT_FLAG=1
+    return 1
+  fi
+  if [[ "$TUI_QUIT_FLAG" -eq 1 ]]; then
+    return 1
+  fi
+  tui_set_raw
   [[ "$answer" == "y" || "$answer" == "Y" ]]
 }
 
@@ -810,7 +860,7 @@ tui_notify() {
 tui_flow_add_field() {
   local key="$1" field_name field_value exists
 
-  tui_read_line "New field name (blank to cancel): "
+  tui_read_line "New field name (blank to cancel): " || return
   field_name="$TUI_INPUT"
   [[ -z "$field_name" ]] && return
 
@@ -825,7 +875,7 @@ tui_flow_add_field() {
     return
   fi
 
-  tui_read_line "$field_name value: "
+  tui_read_line "$field_name value: " || return
   field_value="$TUI_INPUT"
   TUI_STORE_JSON=$(printf '%s' "$TUI_STORE_JSON" | jq --arg k "$key" --arg f "$field_name" --arg v "$field_value" '.[$k][$f] = $v')
   save_store "$TUI_STORE_JSON"
@@ -840,7 +890,7 @@ tui_flow_add() {
   local -a type_choices=() pairs=()
   local type_cursor=0 tcount row
 
-  tui_read_line "New key name (blank to cancel): "
+  tui_read_line "New key name (blank to cancel): " || return
   name="$TUI_INPUT"
   [[ -z "$name" ]] && return
 
@@ -886,7 +936,7 @@ tui_flow_add() {
 
   type_choice="${type_choices[$type_cursor]}"
   if [[ "$type_choice" == "other (enter a new type)" ]]; then
-    tui_read_line "New type name: "
+    tui_read_line "New type name: " || return
     record_type="$TUI_INPUT"
     [[ -z "$record_type" ]] && { tui_notify "Type name cannot be empty."; return; }
   else
@@ -897,7 +947,7 @@ tui_flow_add() {
   case "$record_type" in
     AWS|GCP|Azure)
       for field in $(required_fields_for_type "$record_type"); do
-        tui_read_line "$field: "
+        tui_read_line "$field: " || return
         value="$TUI_INPUT"
         [[ -z "$value" && "$field" == "AWS_DEFAULT_REGION" ]] && continue
         pairs+=("$field=$value")
@@ -907,14 +957,14 @@ tui_flow_add() {
 
   local more_name more_value
   while true; do
-    tui_read_line "Add custom field (name, blank to finish): "
+    tui_read_line "Add custom field (name, blank to finish): " || return
     more_name="$TUI_INPUT"
     [[ -z "$more_name" ]] && break
     if ! [[ "$more_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
       tui_notify "Invalid field name: $more_name"
       continue
     fi
-    tui_read_line "$more_name value: "
+    tui_read_line "$more_name value: " || return
     more_value="$TUI_INPUT"
     pairs+=("$more_name=$more_value")
   done
@@ -933,6 +983,7 @@ tui_screen_section() {
   local field_count row fname fval
 
   while true; do
+    [[ "$TUI_QUIT_FLAG" -eq 1 ]] && return
     fields=()
     while IFS= read -r fname; do
       [[ -z "$fname" ]] && continue
@@ -983,7 +1034,7 @@ tui_screen_section() {
       u)
         if [[ $field_count -gt 0 ]]; then
           fname="${fields[$cursor]}"
-          tui_read_line "New value for $fname: "
+          tui_read_line "New value for $fname: " || return
           TUI_STORE_JSON=$(printf '%s' "$TUI_STORE_JSON" | jq --arg k "$key" --arg f "$fname" --arg v "$TUI_INPUT" '.[$k][$f] = $v')
           save_store "$TUI_STORE_JSON"
           tui_notify "Updated $fname on $key"
@@ -1003,6 +1054,7 @@ tui_screen_list() {
   local cursor=0 key_count row selected rtype
 
   while true; do
+    [[ "$TUI_QUIT_FLAG" -eq 1 ]] && return
     keys=()
     while IFS= read -r selected; do
       [[ -z "$selected" ]] && continue
@@ -1028,7 +1080,7 @@ tui_screen_list() {
       done
     fi
     echo
-    echo "j/k up/down move   Enter/l open   i inject   a add   d delete   q/Esc quit"
+    echo "j/k up/down move   Enter/l open   i inject   a add   d delete   q/Esc/^C quit"
 
     tui_read_key
     [[ "$TUI_QUIT_FLAG" -eq 1 ]] && return
@@ -1041,7 +1093,7 @@ tui_screen_list() {
       i)
         if [[ $key_count -gt 0 ]]; then
           selected="${keys[$cursor]}"
-          [[ -n "$orig_stty" ]] && stty "$orig_stty" 2>/dev/null
+          tui_restore_tty
           echo
           show_record "$selected"
           TUI_QUIT_FLAG=1
@@ -1076,10 +1128,35 @@ run_tui() {
   # CLOUD_ENV_MASTER_PASSWORD.
   local -x CLOUD_ENV_MASTER_PASSWORD
 
+  orig_stty=""
+  if [[ -t 0 ]]; then
+    orig_stty=$(stty -g 2>/dev/null) || orig_stty=""
+  fi
+
+  # Install INT handling before any read (including the password prompt).
+  # The INT trap must only set the quit flag — never `trap - INT` / restore
+  # the previous handler. Doing that inside the handler resets SIGINT to
+  # SIG_DFL while the signal is still being processed, which (because this
+  # script is sourced into the user's shell) terminates the shell and closes
+  # the terminal tab. Previous handler + tty are restored only when run_tui
+  # returns; `trap - RETURN` is part of that trap so it does not re-fire
+  # when the sourced script itself finishes.
+  prev_int_trap=$(trap -p INT)
+  # `return` aborts the function currently blocked (password `read`,
+  # tui_read_key, tui_read_line, ...) — a trapped SIGINT otherwise leaves
+  # `read` waiting for more input. Returning from run_tui itself is what we
+  # want at the password prompt; inner helpers already check TUI_QUIT_FLAG.
+  trap 'TUI_QUIT_FLAG=1; return 130' INT
+  trap 'tui_restore_tty; if [[ -n "$prev_int_trap" ]]; then eval "$prev_int_trap"; else trap - INT; fi; trap - RETURN' RETURN
+
   if [[ ! -f "$CLOUD_ENV_STORE_PATH" ]]; then
     echo "No store found at $CLOUD_ENV_STORE_PATH -- creating a new one."
-    read -r -s -p "Set a new master password: " tui_password
+    if ! read -r -s -p "Set a new master password: " tui_password; then
+      echo
+      return 130
+    fi
     echo
+    [[ "$TUI_QUIT_FLAG" -eq 1 ]] && return 130
     if [[ -z "$tui_password" ]]; then
       echo "Master password is required" >&2
       return 1
@@ -1087,21 +1164,17 @@ run_tui() {
     CLOUD_ENV_MASTER_PASSWORD="$tui_password"
     TUI_STORE_JSON='{}'
   else
-    read -r -s -p "Master password: " tui_password
+    if ! read -r -s -p "Master password: " tui_password; then
+      echo
+      return 130
+    fi
     echo
+    [[ "$TUI_QUIT_FLAG" -eq 1 ]] && return 130
     CLOUD_ENV_MASTER_PASSWORD="$tui_password"
     TUI_STORE_JSON=$(load_store) || return 1
   fi
 
-  orig_stty=""
-  if [[ -t 0 ]]; then
-    orig_stty=$(stty -g 2>/dev/null) || orig_stty=""
-  fi
-  prev_int_trap=$(trap -p INT)
-  trap '[[ -n "$orig_stty" ]] && stty "$orig_stty" 2>/dev/null; if [[ -n "$prev_int_trap" ]]; then eval "$prev_int_trap"; else trap - INT; fi; TUI_QUIT_FLAG=1' INT
-  trap '[[ -n "$orig_stty" ]] && stty "$orig_stty" 2>/dev/null; if [[ -n "$prev_int_trap" ]]; then eval "$prev_int_trap"; else trap - INT; fi' RETURN
-
-  [[ -n "$orig_stty" ]] && stty -echo -icanon min 1 time 0 2>/dev/null
+  tui_set_raw
 
   while [[ "$TUI_QUIT_FLAG" -ne 1 ]]; do
     tui_screen_list

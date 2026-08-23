@@ -853,6 +853,34 @@ test_tui_inject_exports_and_forgets_password() {
   assert_unset CLOUD_ENV_DANGER "tui never turns on real danger mode"
 }
 
+# Ctrl-C (ETX) on the LIST screen must quit the tui the same way 'q' does —
+# returning to the calling shell, not killing it. Also prove INT/RETURN
+# traps installed for the session do not leak afterwards (a leaked INT trap
+# that does `trap - INT` is what used to close the console on Ctrl-C).
+test_tui_ctrl_c_quits_without_killing_shell() {
+  init_store_env
+  add_aws aws-main
+  unset CLOUD_ENV_MASTER_PASSWORD CLOUD_ENV_DANGER
+
+  ce tui <<<"$(printf '%s\n\x03' "$MASTER_PASS")"
+  assert_ok "ctrl-c quits tui"
+  assert_contains "$OUT" "ee tui --" "tui list was shown"
+  assert_eq "" "$(trap -p INT)" "INT trap must not leak after tui"
+  assert_eq "" "$(trap -p RETURN)" "RETURN trap must not leak after tui"
+}
+
+# 'q' is the other LIST-screen quit path; traps must be restored there too.
+test_tui_q_does_not_leak_traps() {
+  init_store_env
+  add_aws aws-main
+  unset CLOUD_ENV_MASTER_PASSWORD CLOUD_ENV_DANGER
+
+  ce tui <<<"$(printf '%s\nq' "$MASTER_PASS")"
+  assert_ok "q quits tui"
+  assert_eq "" "$(trap -p INT)" "INT trap must not leak after q"
+  assert_eq "" "$(trap -p RETURN)" "RETURN trap must not leak after q"
+}
+
 # ===========================================================================
 # Section I — install
 # ===========================================================================
@@ -972,6 +1000,8 @@ run_test "test rejects --storage"                        test_selftest_rejects_s
 section "H: tui"
 run_test "tui creates a store and adds a record"          test_tui_create_store_and_add_record
 run_test "tui inject exports vars and forgets password"   test_tui_inject_exports_and_forgets_password
+run_test "tui ctrl-c quits without killing the shell"     test_tui_ctrl_c_quits_without_killing_shell
+run_test "tui q does not leak traps"                      test_tui_q_does_not_leak_traps
 
 section "I: install"
 run_test "install adds alias to bashrc"                   test_install_adds_alias_to_bashrc
