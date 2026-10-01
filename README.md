@@ -182,12 +182,98 @@ list. While enabled, a red `DANGER` badge is shown in the prompt.
 
 ## PS1 integration
 
-Add `CLOUD_PS1_KEY` to your prompt so active cloud contexts are visible.
-Example for Bash:
+Add `CLOUD_PS1_KEY` to your Bash prompt so active cloud contexts are visible.
+
+### Simple Bash setup
+
+If nothing else rebuilds your prompt, add this to `~/.bashrc`:
 
 ```bash
+shopt -s promptvars
 export PS1='${CLOUD_PS1_KEY}${CLOUD_PS1_KEY:+ }'"$PS1"
 ```
+
+Reload the configuration:
+
+```bash
+source ~/.bashrc
+```
+
+Then inject a key:
+
+```bash
+ee inject <key-name>
+```
+
+You should see a badge before your normal prompt.
+
+### Bash setup with `PROMPT_COMMAND`
+
+Some Bash configurations, prompt themes, and framework scripts rebuild `PS1`
+before every prompt. In that case, the simple setup can be overwritten after
+`.bashrc` finishes. Add the following **after** your prompt framework
+initialization in `~/.bashrc`:
+
+```bash
+shopt -s promptvars
+
+__ee_badge_ps1() {
+  case "$PS1" in
+    *'${CLOUD_PS1_KEY}'*) ;;
+    *) PS1='${CLOUD_PS1_KEY}${CLOUD_PS1_KEY:+ }'"$PS1" ;;
+  esac
+}
+
+# Add the hook only once. Bash supports PROMPT_COMMAND as either an array
+# or a semicolon-separated string.
+if [[ "$(declare -p PROMPT_COMMAND 2>/dev/null)" == "declare -a"* ]]; then
+  case " ${PROMPT_COMMAND[*]} " in
+    *" __ee_badge_ps1 "*) ;;
+    *) PROMPT_COMMAND+=(__ee_badge_ps1) ;;
+  esac
+else
+  case ";${PROMPT_COMMAND-};" in
+    *";__ee_badge_ps1;"*) ;;
+    *) PROMPT_COMMAND="${PROMPT_COMMAND:+$PROMPT_COMMAND; }__ee_badge_ps1" ;;
+  esac
+fi
+```
+
+Reload the configuration and test it:
+
+```bash
+source ~/.bashrc
+ee inject <key-name>
+```
+
+The hook reapplies the badge after other `PROMPT_COMMAND` handlers have
+rebuilt the prompt. The guard makes the setup safe to source more than once.
+
+If the badge still does not appear, run these commands in the same shell after
+injecting a key:
+
+```bash
+printf 'badge=%q\n' "$CLOUD_PS1_KEY"
+printf 'PS1=%q\n' "$PS1"
+declare -p PROMPT_COMMAND 2>/dev/null
+shopt promptvars
+type ee
+```
+
+Check that:
+
+- `CLOUD_PS1_KEY` contains the injected key's badge.
+- `promptvars` is `on`.
+- `PS1` contains the literal `${CLOUD_PS1_KEY}` expression.
+- `ee` sources the script, for example:
+  `alias ee='. /path/to/ee.sh'`.
+- `ee` is not running the script as `bash /path/to/ee.sh`, because a child
+  shell cannot export variables back to the current shell.
+
+Starship, Oh My Posh, and similar prompt managers may rebuild the prompt using
+their own configuration. For those tools, add `CLOUD_PS1_KEY` through the
+tool's custom module or prompt configuration instead of modifying `PS1`
+directly.
 
 What you will see:
 
